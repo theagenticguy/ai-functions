@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from .lineage import Lineage
 from .loop import AttemptOutcome, EvolutionReport, VaryFn, evolve
+from .threads import notify_on_stall, thread_vary
 from .types import CommittedVersion, EvolutionError, LineageStore, RejectedCommit, Score, ScoreFn
 
 __all__ = [
@@ -35,4 +36,6 @@ __all__ = [
     "ScoreFn",
     "VaryFn",
     "evolve",
+    "notify_on_stall",
+    "thread_vary",
 ]

@@ -23,6 +23,7 @@ Because AI Functions *are* functions, developers can construct agentic workflows
 - [Events and observability](#events-and-observability)
 - [Memory and optimization](#memory-and-optimization)
 - [Economics-aware execution](#economics-aware-execution)
+- [Evolutionary search](#evolutionary-search)
 - [Distributed operation](#distributed-operation)
 - [Running agents across processes](#running-agents-across-processes)
 - [Going further](#going-further)
@@ -1132,6 +1133,58 @@ result = await solve(clauses=clauses, n_vars=8)   # called like any AI Function
 `@routed` stacks on an ordinary `@ai_function`, routing each call across several models. Three pieces define the economics: `value` is what a verified success is worth in dollars; `models` are the candidates, each pairing a model with its token prices; and the post-conditions define success. Each call starts from per-candidate estimates (the chance of passing and expected cost), tries the most profitable candidate, returns its result if it passes, switches if it fails, and abstains when no candidate is worth its cost.
 
 See the [economics documentation](economics.md) for more details, including alternative search policies, estimation via learned/custom beliefs, and adaptive stopping on graded tasks. Note: the module is experimental — the API may change in future releases.
+
+## Evolutionary search
+
+Post-conditions accept or reject; sometimes you also need to *rank* — keep proposing candidates and keep only the ones that beat the best so far. The `ai_functions.experimental.evolution` module implements the agentic evolutionary search pattern ([AVO, arXiv:2603.24517](https://arxiv.org/abs/2603.24517)): a variation operator (any async callable — an `@ai_function`, a Claude Code session, plain Python) consults a scored **lineage** of previous solutions, proposes the next candidate, and a caller-owned **score function** gates and ranks it. Only improvements are committed.
+
+```python
+from ai_functions.experimental.evolution import Lineage, Score, evolve
+
+def score_pattern(pattern: str) -> Score:
+    """The scoring function f: a correctness gate plus a fitness value."""
+    compiled = re.compile(pattern)
+    missed = [s for s in MATCH if not compiled.search(s)]
+    leaked = [s for s in REJECT if compiled.search(s)]
+    if missed or leaked:
+        return Score(correct=False, notes=f"missed={missed} leaked={leaked}")
+    return Score(correct=True, value=-len(pattern))  # shorter is fitter
+
+
+@ai_function
+def propose_pattern(lineage_context: str, match: list[str], reject: list[str]) -> str:
+    """Match EVERY string in {match}, NONE in {reject}; shorter is better.
+
+    {lineage_context}"""
+
+
+async def vary(lineage):
+    return await propose_pattern(lineage_context=lineage.as_context(k=5), match=MATCH, reject=REJECT)
+
+
+lineage, report = await evolve(vary, score_pattern, steps=8)
+best = lineage.best  # the champion CommittedVersion
+```
+
+Three invariants make the loop trustworthy. A candidate that fails correctness scores zero no matter its fitness, so nothing can rank a broken candidate above a working one. The lineage is append-only and score-gated: `commit` admits a candidate only when it's correct *and* at least matches the best committed value, so the champion never regresses. And a `score_fn` that raises becomes a *failing score* whose message feeds back into the next variation prompt — the same error-as-feedback discipline post-conditions use.
+
+For long searches, run the operator as a **stateful thread** so each proposal sees the full history of what was tried, and attach the **stall supervisor** — after N consecutive non-commits, a redirection is injected into the operator's own context via `notify`:
+
+```python
+from ai_functions.experimental.evolution import notify_on_stall, thread_vary
+
+handle = await propose_pattern.spawn()
+lineage, report = await evolve(
+    thread_vary(handle),              # every step runs on the SAME thread
+    score_pattern,
+    steps=40,
+    stall_after=5,
+    on_stall=notify_on_stall(handle), # "[SUPERVISOR] ... try a different approach"
+)
+await handle.terminate()
+```
+
+The loop depends only on the `LineageStore` protocol (`best`, `as_context`, `admits`, `commit`), so where versions live is your decision: the built-in `Lineage` keeps them in memory with optional JSONL persistence (`Lineage(path="lineage.jsonl")` reloads on restart), and any store satisfying the protocol — a git repository, a content-addressed revision store — plugs in unchanged. See `examples/evolution_regex_golf.py` (one-shot) and `examples/evolution_stateful_thread.py` (thread + supervisor). Note: the module is experimental — the API may change in future releases.
 
 ## Distributed operation
 

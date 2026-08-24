@@ -9,6 +9,7 @@ Strands AI Functions is a Python library built around a new abstraction: functio
 - **[One team, many runtimes](#threads-are-a-protocol-claude-code-kiro-or-your-own)**: threads implement a common protocol, so any agent runtime can join a team; wrappers for Claude Code and Kiro ship in the box and are discovered, messaged, and orchestrated exactly like native threads.
 - **[Distributed by a one-line change](#distributed-operation)**: swap the in-process coordinator for a client, and the same code runs across processes and machines.
 - **[Memory and optimization](#memory--optimization)**: backpropagation-style natural-language feedback updates the prompts, facts, and code your workflow relies on, so it continuously improves.
+- **[Evolutionary search](docs/tutorial.md#evolutionary-search)** *(experimental)*: a variation agent consults a scored, gated lineage of prior solutions and proposes the next candidate — the agentic evolutionary search pattern ([AVO](https://arxiv.org/abs/2603.24517)), with a stall supervisor that redirects a plateaued search.
 
 ## Getting Started
 

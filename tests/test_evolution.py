@@ -8,8 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from ai_functions.experimental.evolution import (
+    CommittedVersion,
     EvolutionReport,
     Lineage,
+    LineageStore,
     RejectedCommit,
     Score,
     evolve,
@@ -125,6 +127,58 @@ class TestLineageContext:
             _ = lineage.commit(i, Score(correct=True, value=float(i)))
         text = lineage.as_context(k=2)
         assert "v4" in text and "v5" in text and "v1" not in text
+
+
+# ══════════════════════════════════════════════════════════════════
+# LineageStore: the storage contract
+# ══════════════════════════════════════════════════════════════════
+
+
+class MinimalStore:
+    """A from-scratch LineageStore: what a downstream backend must implement."""
+
+    def __init__(self) -> None:
+        self._versions: list[CommittedVersion] = []
+
+    def __len__(self) -> int:
+        return len(self._versions)
+
+    @property
+    def best(self) -> CommittedVersion | None:
+        return max(reversed(self._versions), key=lambda v: v.score.value) if self._versions else None
+
+    def as_context(self, k: int | None = None) -> str:
+        return f"{len(self._versions)} committed"
+
+    def admits(self, score: Score) -> bool:
+        return score.correct and (self.best is None or score.value >= self.best.score.value)
+
+    def commit(self, candidate: object, score: Score, parent_version: int | None = None) -> CommittedVersion:
+        if not self.admits(score):
+            raise RejectedCommit("gate")
+        version = CommittedVersion(version=len(self._versions) + 1, candidate=candidate, score=score)
+        self._versions.append(version)
+        return version
+
+
+class TestLineageStoreProtocol:
+    def test_lineage_satisfies_the_protocol(self):
+        assert isinstance(Lineage(), LineageStore)
+
+    def test_a_minimal_store_satisfies_the_protocol(self):
+        assert isinstance(MinimalStore(), LineageStore)
+
+    def test_evolve_runs_against_a_custom_store(self):
+        async def vary(lineage: LineageStore) -> int:
+            return len(lineage) + 1
+
+        def score_fn(x: int) -> Score:
+            return Score(correct=True, value=float(x))
+
+        store, report = asyncio.run(evolve(vary, score_fn, MinimalStore(), steps=3))
+        assert isinstance(store, MinimalStore)
+        assert report.committed == 3
+        assert store.best is not None and store.best.score.value == 3.0
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -18,7 +18,7 @@ Invariants:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -85,3 +85,40 @@ class EvolutionError(AIFunctionError):
 
 class RejectedCommit(EvolutionError):
     """A candidate failed the commit gate (incorrect, or below the best committed score)."""
+
+
+@runtime_checkable
+class LineageStore(Protocol):
+    """The storage contract a variation loop evolves against.
+
+    This is the interoperability boundary: :func:`~.loop.evolve` depends only
+    on this protocol, and what two implementations must agree on is exactly
+    these five members — the gate semantics (``admits``: correct AND at least
+    the best committed value), the append (``commit``, which must raise
+    :class:`RejectedCommit` on a gate failure), and the three reads a
+    variation operator needs. *Where* versions live — memory, JSONL, a git
+    repository, an artifact/revision store — is an implementation decision
+    that stays outside this library; :class:`~.lineage.Lineage` is the
+    batteries-included reference.
+    """
+
+    def __len__(self) -> int:
+        """Number of committed versions."""
+        ...
+
+    @property
+    def best(self) -> CommittedVersion | None:
+        """The highest-scoring committed version, or ``None`` when empty."""
+        ...
+
+    def as_context(self, k: int | None = None) -> str:
+        """Render the last ``k`` committed versions (all when ``None``) for a variation prompt."""
+        ...
+
+    def admits(self, score: Score) -> bool:
+        """Whether the commit gate would admit a candidate with this score right now."""
+        ...
+
+    def commit(self, candidate: Any, score: Score, parent_version: int | None = None) -> CommittedVersion:  # pyright: ignore[reportExplicitAny]
+        """Admit a candidate through the gate and append it; raise :class:`RejectedCommit` otherwise."""
+        ...

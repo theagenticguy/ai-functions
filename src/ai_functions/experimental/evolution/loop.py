@@ -21,9 +21,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .lineage import Lineage
-from .types import Score, ScoreFn
+from .types import LineageStore, Score, ScoreFn
 
-VaryFn = Callable[[Lineage], Awaitable[Any]]
+VaryFn = Callable[[LineageStore], Awaitable[Any]]
 """Variation operator: consult the lineage, return the next candidate."""
 
 
@@ -79,12 +79,12 @@ async def _score(score_fn: ScoreFn, candidate: Any) -> Score:  # pyright: ignore
 async def evolve(
     vary: VaryFn,
     score_fn: ScoreFn,
-    lineage: Lineage | None = None,
+    lineage: LineageStore | None = None,
     *,
     steps: int = 10,
     stall_after: int | None = None,
-    on_stall: Callable[[Lineage, EvolutionReport], Awaitable[None]] | None = None,
-) -> tuple[Lineage, EvolutionReport]:
+    on_stall: Callable[[LineageStore, EvolutionReport], Awaitable[None]] | None = None,
+) -> tuple[LineageStore, EvolutionReport]:
     """Run ``steps`` variation steps, committing improvements to the lineage.
 
     Args:
@@ -93,8 +93,8 @@ async def evolve(
             current champion) and returns the next candidate.
         score_fn: The scoring function ``f``. A raised exception is treated
             as a failed correctness check, with the message in ``Score.notes``.
-        lineage: Archive to evolve; a fresh in-memory :class:`Lineage` when
-            ``None``.
+        lineage: Any :class:`~.types.LineageStore` implementation; a fresh
+            in-memory :class:`Lineage` when ``None``.
         steps: Variation steps to run.
         stall_after: When this many consecutive attempts fail to commit,
             invoke ``on_stall`` (the paper's conditional supervisor seam) —

@@ -1,4 +1,4 @@
-"""The scored lineage: an append-only archive of committed versions.
+"""The scored lineage: the reference implementation of :class:`~.types.LineageStore`.
 
 This is the population ``P`` of agentic evolutionary search
 (AVO, arXiv:2603.24517) in its single-lineage form: a sequence of
@@ -6,6 +6,11 @@ This is the population ``P`` of agentic evolutionary search
 commit gate — the candidate passed correctness AND matched or improved on
 the best committed score. Failed attempts stay in the caller's trajectory;
 they never enter the lineage.
+
+Storage here is deliberately minimal (in-memory, optional JSONL). Anything
+more opinionated — a git repository, a content-addressed revision store with
+branches and merges — implements the same :class:`~.types.LineageStore`
+protocol in its own library and plugs into :func:`~.loop.evolve` unchanged.
 
 The lineage is deliberately not a :class:`~ai_functions.memory.base.MemoryBackend`:
 a backend stores named parameters that optimizers rewrite, while a lineage is

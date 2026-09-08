@@ -25,12 +25,14 @@ from typing import Any, Self, cast
 
 from pydantic import TypeAdapter
 
-from ..runtime.errors import ThreadNotFoundError
+from ..runtime.errors import DistributedError, ThreadNotFoundError
 from ..types import Event
+from .error_kinds import classify
 from .wire import (
     CallFrame,
     ConnectionClosedError,
     ErrorFrame,
+    ErrorKind,
     EventFrame,
     Frame,
     RemoteError,
@@ -81,13 +83,23 @@ def _describe_transport_close(exc: BaseException) -> tuple[str, bool]:
 
 
 # Map well-known exception classes to / from their type names on the wire.
-# Extend as needed; unknown names produce a RemoteError on the caller side.
+# Every entry must be constructible from a single message string, because that
+# plus the class name is all an ErrorFrame carries. A runtime error whose
+# __init__ takes its own fields (WorkerLostError's worker_id, ConnectionLostError's
+# url and retry count, SerializationError's function name, EventEmissionError's
+# kind/thread/source) cannot be rebuilt from a message without inventing those
+# fields, so it stays out of this table and reaches the caller as a RemoteError
+# whose ``kind`` classifies it. Unknown names produce a RemoteError too.
 _KNOWN_EXCEPTIONS: dict[str, type[Exception]] = {
     "ValueError": ValueError,
+    "TypeError": TypeError,
     "KeyError": KeyError,
     "NotImplementedError": NotImplementedError,
     "RuntimeError": RuntimeError,
+    "TimeoutError": TimeoutError,
     "ThreadNotFoundError": ThreadNotFoundError,
+    "DistributedError": DistributedError,
+    "ConnectionClosedError": ConnectionClosedError,
 }
 
 
@@ -328,10 +340,10 @@ class WireChannel:
                 fut = self._pending.pop(call_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(value)
-            case ErrorFrame(id=call_id, type=err_type, message=msg):
+            case ErrorFrame(id=call_id, type=err_type, message=msg, error_kind=err_kind):
                 fut = self._pending.pop(call_id, None)
                 if fut is not None and not fut.done():
-                    fut.set_exception(_rehydrate_error(err_type, msg))
+                    fut.set_exception(_rehydrate_error(err_type, msg, err_kind))
             case CallFrame(id=call_id, method=method, params=params):
                 # Dispatch async so multiple inbound calls can interleave.
                 _ = asyncio.create_task(self._handle_call(call_id, method, params))
@@ -353,6 +365,7 @@ class WireChannel:
                 id=call_id,
                 type="NotImplementedError",
                 message=f"no handler registered for method {method!r}",
+                error_kind="invalid_input",
             )
             with suppress(Exception):
                 await self._transport.send(err.model_dump_json())
@@ -361,11 +374,7 @@ class WireChannel:
         try:
             value = await handler(params)
         except Exception as exc:  # noqa: BLE001 -- every handler error becomes a wire frame
-            err = ErrorFrame(
-                id=call_id,
-                type=type(exc).__name__,
-                message=str(exc),
-            )
+            err = _error_frame(call_id, exc)
             with suppress(Exception):
                 await self._transport.send(err.model_dump_json())
             return
@@ -378,15 +387,50 @@ class WireChannel:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _rehydrate_error(err_type: str, message: str) -> Exception:
-    """Reconstruct a typed exception from a wire ErrorFrame."""
+def _error_frame(call_id: str, exc: BaseException) -> ErrorFrame:
+    """Encode ``exc`` as the ``ErrorFrame`` answering call ``call_id``.
+
+    A :class:`RemoteError` is relayed rather than re-described: this peer is the
+    middle of a chain (a coordinator answering one client with what another
+    client's worker raised), so the frame keeps the original class name and the
+    classification the far end sent. Re-describing it would report every relayed
+    failure as ``RemoteError`` / ``internal`` and lose the far end's kind at the
+    first hop.
+
+    Args:
+        call_id: Correlation id of the ``CallFrame`` being answered.
+        exc: The exception the handler raised.
+
+    Returns:
+        The frame to send back.
+    """
+    if isinstance(exc, RemoteError):
+        return ErrorFrame(id=call_id, type=exc.remote_type, message=exc.message, error_kind=exc.kind)
+    return ErrorFrame(id=call_id, type=type(exc).__name__, message=str(exc), error_kind=classify(exc))
+
+
+def _rehydrate_error(err_type: str, message: str, error_kind: ErrorKind | None = None) -> Exception:
+    """Reconstruct a typed exception from a wire ErrorFrame.
+
+    Args:
+        err_type: The frame's ``type`` — the peer's exception class name.
+        message: The frame's ``message``.
+        error_kind: The frame's ``error_kind``; ``None`` from a peer that sends
+            none, which the resulting ``RemoteError`` reads as ``"internal"``.
+
+    Returns:
+        An instance of the named class when this process knows it and can build
+        it from a message, else a :class:`RemoteError` carrying ``error_kind`` so
+        the caller can branch on the classification instead of on ``err_type``.
+    """
+    kind: ErrorKind = error_kind if error_kind is not None else "internal"
     cls = _KNOWN_EXCEPTIONS.get(err_type)
     if cls is None:
-        return RemoteError(err_type, message)
+        return RemoteError(err_type, message, kind)
     try:
         return cls(message)
     except Exception:  # noqa: BLE001 -- some exception classes have custom __init__
-        return RemoteError(err_type, message)
+        return RemoteError(err_type, message, kind)
 
 
 EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)  # pyright: ignore[reportInvalidTypeForm]

@@ -10,7 +10,9 @@ Frames are discriminated on ``kind``:
 - ``call``  — request: method name + JSON params. Awaits a ``result``
   or ``error`` frame with matching ``id``.
 - ``result`` — success response; carries a JSON value.
-- ``error``  — failure response; carries an error type + message.
+- ``error``  — failure response; carries an error type, a message and an
+  :data:`ErrorKind` classification the caller can branch on without
+  matching the peer's exception class name.
 - ``event``  — server-initiated event broadcast; no response expected.
 
 A single ``Binary`` field is used for cloudpickle payloads (Spawnables,
@@ -47,6 +49,37 @@ Binary = Annotated[bytes, ...]
 
 Used for cloudpickle-serialized spawnables and prompt args / kwargs /
 results — payloads that can't round-trip through JSON natively.
+"""
+
+
+# ── Error classification ─────────────────────────────────────────────────────
+
+ErrorKind = Literal[
+    "cancelled",
+    "not_found",
+    "terminated",
+    "invalid_input",
+    "model_unavailable",
+    "worker_lost",
+    "connection_lost",
+    "internal",
+]
+"""Transport-independent class of a remote failure, carried on every ``ErrorFrame``.
+
+A caller decides retry, escalate or abort from this value, so a peer's exception
+class name never has to be string-matched. The names an
+:class:`ai_functions.network.error_kinds` registry maps to each kind are the
+host's to extend; the vocabulary itself is closed:
+
+- ``cancelled`` — the remote work was cancelled cooperatively.
+- ``not_found`` — the named thread, worker or record does not exist there.
+- ``terminated`` — the thread existed and is gone; retrying the same id cannot work.
+- ``invalid_input`` — the call's arguments are wrong; retrying them cannot work.
+- ``model_unavailable`` — a model provider refused or throttled the call; retry later.
+- ``worker_lost`` — the worker hosting the thread died.
+- ``connection_lost`` — the transport dropped; the call's outcome is unknown.
+- ``internal`` — anything unclassified, which is the default a peer that sends no
+  ``kind`` at all is read as.
 """
 
 
@@ -99,12 +132,16 @@ class ErrorFrame(BaseModel):
             typed exception when possible; otherwise surfaced as
             :class:`RemoteError`.
         message: Human-readable error description.
+        error_kind: Classification of the failure (see :data:`ErrorKind`).
+            Defaults to ``None``, which a reader treats as ``"internal"``, so a
+            peer that sends no classification still produces a valid frame.
     """
 
     kind: Literal["error"]
     id: str
     type: str
     message: str
+    error_kind: ErrorKind | None
 
 
 class EventFrame(BaseModel):
@@ -181,20 +218,28 @@ class WireError(Exception):
 class RemoteError(WireError):
     """A peer returned an ``ErrorFrame`` whose ``type`` we cannot rehydrate.
 
+    ``kind`` is what a caller branches on: the local process has no class for
+    ``remote_type``, so classifying the failure by name is the only alternative
+    and it breaks the moment the peer renames or wraps an exception.
+
     Attributes:
         remote_type (str): The ``type`` field from the ErrorFrame — the
             peer's exception class name.
         message (str): The ``message`` field from the ErrorFrame.
+        kind (ErrorKind): Classification of the failure; ``"internal"`` for a
+            peer that sent no ``error_kind``.
 
     Args:
         remote_type: The ``type`` field from the ErrorFrame.
         message: The ``message`` field from the ErrorFrame.
+        kind: The frame's ``error_kind``, or ``"internal"`` when it carried none.
     """
 
     remote_type: str
     message: str
+    kind: ErrorKind
 
-    def __init__(self, remote_type: str, message: str) -> None: ...
+    def __init__(self, remote_type: str, message: str, kind: ErrorKind = "internal") -> None: ...
 
 
 class ConnectionClosedError(WireError):

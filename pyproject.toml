@@ -63,7 +63,7 @@ runtime-tools = [
     "uvicorn>=0.30",
 ]
 codex = [
-    "openai-codex>=0.144.4",
+    "openai-codex>=0.147.0",
     # The Codex thread serves the runtime tools to the app-server over HTTP
     # MCP (CoordinatorToolServer), so the runtime-tools deps come along.
     "mcp>=1.29",
@@ -103,7 +103,7 @@ dependencies = [
     "agent-client-protocol>=0.12.1,<0.13",
     "mcp>=1.29",
     "uvicorn>=0.30",
-    "openai-codex>=0.144.4",
+    "openai-codex>=0.147.0",
     "pyyaml>=6.0.1",
     "bedrock-agentcore>=1.6.0",
     "rank-bm25>=0.2.2",

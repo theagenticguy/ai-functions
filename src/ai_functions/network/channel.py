@@ -27,12 +27,11 @@ from pydantic import TypeAdapter
 
 from ..runtime.errors import DistributedError, ThreadNotFoundError
 from ..types import Event
-from .error_kinds import classify
+from .error_kinds import classify, coerce_error_kind
 from .wire import (
     CallFrame,
     ConnectionClosedError,
     ErrorFrame,
-    ErrorKind,
     EventFrame,
     Frame,
     RemoteError,
@@ -90,6 +89,11 @@ def _describe_transport_close(exc: BaseException) -> tuple[str, bool]:
 # kind/thread/source) cannot be rebuilt from a message without inventing those
 # fields, so it stays out of this table and reaches the caller as a RemoteError
 # whose ``kind`` classifies it. Unknown names produce a RemoteError too.
+# ConnectionClosedError stays out on purpose even though it is constructible
+# from a message: it means *this* process's transport closed, and rehydrating a
+# peer's would make a remote drop indistinguishable from a local one — exactly
+# the distinction reconnect logic branches on. A peer's arrives as a
+# RemoteError with kind "connection_lost".
 _KNOWN_EXCEPTIONS: dict[str, type[Exception]] = {
     "ValueError": ValueError,
     "TypeError": TypeError,
@@ -99,7 +103,6 @@ _KNOWN_EXCEPTIONS: dict[str, type[Exception]] = {
     "TimeoutError": TimeoutError,
     "ThreadNotFoundError": ThreadNotFoundError,
     "DistributedError": DistributedError,
-    "ConnectionClosedError": ConnectionClosedError,
 }
 
 
@@ -409,21 +412,22 @@ def _error_frame(call_id: str, exc: BaseException) -> ErrorFrame:
     return ErrorFrame(id=call_id, type=type(exc).__name__, message=str(exc), error_kind=classify(exc))
 
 
-def _rehydrate_error(err_type: str, message: str, error_kind: ErrorKind | None = None) -> Exception:
+def _rehydrate_error(err_type: str, message: str, error_kind: str | None = None) -> Exception:
     """Reconstruct a typed exception from a wire ErrorFrame.
 
     Args:
         err_type: The frame's ``type`` — the peer's exception class name.
         message: The frame's ``message``.
-        error_kind: The frame's ``error_kind``; ``None`` from a peer that sends
-            none, which the resulting ``RemoteError`` reads as ``"internal"``.
+        error_kind: The frame's ``error_kind``. ``None`` and kinds outside this
+            build's vocabulary read as ``"internal"`` on the resulting
+            ``RemoteError``.
 
     Returns:
         An instance of the named class when this process knows it and can build
         it from a message, else a :class:`RemoteError` carrying ``error_kind`` so
         the caller can branch on the classification instead of on ``err_type``.
     """
-    kind: ErrorKind = error_kind if error_kind is not None else "internal"
+    kind = coerce_error_kind(error_kind)
     cls = _KNOWN_EXCEPTIONS.get(err_type)
     if cls is None:
         return RemoteError(err_type, message, kind)

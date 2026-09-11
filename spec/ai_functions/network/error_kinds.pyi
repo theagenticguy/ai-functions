@@ -1,16 +1,21 @@
-"""Exception-to-:data:`~ai_functions.network.wire.ErrorKind` classification registry.
+"""Exception-to-:data:`~ai_functions.network.wire.ErrorKind` classification.
 
-An ``ErrorFrame`` carries the peer's exception class *name*, which is all a
-different process can send. A caller that must decide retry-versus-abort from
-that name ends up matching strings — ``"ThrottlingException"``, a ``"botocore."``
-prefix, ``"ValidationException" in name`` — and every such match breaks when a
-provider renames or wraps an exception. :func:`classify` answers the same
-question from the exception's type, and :func:`register_error_kind` lets the host
-that owns a model provider or storage client declare that provider's exceptions
-once, at the process that raises them, where the real class is in scope.
+:func:`classify` maps an exception to the :data:`ErrorKind` a peer reads on the
+``ErrorFrame`` that reports it, so callers branch on the kind instead of
+matching the peer's exception class name.
 
-Registration is process-wide and applies to the whole MRO of the registered
-type, so registering a provider's base exception classifies every subclass.
+Two sources feed the classification, checked per class along the MRO:
+
+- An ``error_kind`` class attribute, declared by exception classes this
+  codebase owns (the runtime errors in :mod:`ai_functions.runtime.errors`,
+  :class:`~ai_functions.network.wire.ConnectionClosedError`).
+- A process-wide registry for third-party classes: :func:`register_error_kind`
+  lets the host that owns a model provider or storage client declare that
+  provider's exceptions once. Registration is last-write-wins across the whole
+  process.
+
+Both apply to the whole MRO, so declaring or registering a base exception
+classifies every subclass.
 
 Usage::
 
@@ -19,16 +24,14 @@ Usage::
 
     register_error_kind(ClientError, "model_unavailable")
 
-This module keeps :mod:`ai_functions.network.wire` free of runtime imports: the
-frame schemas stay transport- and runtime-agnostic while the seed registry here
-names the runtime's own error classes.
-
 Invariants:
     A. ``classify`` is total — every ``BaseException`` maps to some
        ``ErrorKind``, defaulting to ``"internal"``, so a caller never has to
        handle "unclassified".
-    B. The most derived registered ancestor wins, so registering a base class
-       never overrides a more specific registration for a subclass.
+    B. The most derived classified ancestor wins, so registering or declaring
+       a base class never overrides a more specific classification for a
+       subclass. At the same MRO level a registration wins over the class's
+       own declaration.
 """
 
 from __future__ import annotations
@@ -36,15 +39,29 @@ from __future__ import annotations
 from .wire import ErrorKind
 
 
+def coerce_error_kind(value: str | None) -> ErrorKind:
+    """Read a wire ``error_kind`` value into this build's vocabulary.
+
+    Args:
+        value: The frame's ``error_kind``; ``None`` from a peer that sends none.
+
+    Returns:
+        ``value`` when it is one of this build's :data:`ErrorKind` values,
+        ``"internal"`` otherwise.
+    """
+    ...
+
+
 def classify(exc: BaseException) -> ErrorKind:
-    """Classify ``exc`` by walking its MRO against the registry.
+    """Classify ``exc`` by walking its MRO against the registry and declarations.
 
     Args:
         exc: The exception a peer is about to report, or reported.
 
     Returns:
-        The kind registered for the most derived class in ``type(exc).__mro__``
-        that has one; ``"internal"`` when none does.
+        The kind registered or declared (``error_kind`` class attribute) for
+        the most derived class in ``type(exc).__mro__`` that has one;
+        ``"internal"`` when none does.
     """
     ...
 
@@ -55,8 +72,9 @@ def register_error_kind(exc_type: type[BaseException], kind: ErrorKind) -> None:
     Call this once at process start for every third-party exception whose class
     the wire layer cannot know: a model provider's throttling and access errors
     (``model_unavailable``), a storage client's missing-key error
-    (``not_found``). The registration replaces any previous one for the same
-    type and shadows registrations for its base classes.
+    (``not_found``). The registry is process-wide: the registration replaces any
+    previous one for the same type — last write wins — and shadows
+    registrations or declarations on its base classes.
 
     Args:
         exc_type: Exception class to classify.

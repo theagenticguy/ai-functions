@@ -30,7 +30,7 @@ via a thin adapter.
 from __future__ import annotations
 
 import base64
-from typing import Annotated, Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, BeforeValidator, Field, PlainSerializer
 
@@ -78,7 +78,10 @@ ErrorKind = Literal[
 A caller decides retry, escalate or abort from this value, so a peer's exception
 class name never has to be string-matched. The names an
 :class:`ai_functions.network.error_kinds` registry maps to each kind are the
-host's to extend; the vocabulary itself is closed:
+host's to extend. On the wire the field is an open string; a kind outside this
+vocabulary is read as ``"internal"``
+(:func:`~ai_functions.network.error_kinds.coerce_error_kind`). The values a
+reader can branch on:
 
 - ``cancelled`` — the remote work was cancelled cooperatively.
 - ``not_found`` — the named thread, worker or record does not exist there.
@@ -142,15 +145,15 @@ class ErrorFrame(BaseModel):
             :class:`RemoteError`.
         message: Human-readable error description.
         error_kind: Classification of the failure (see :data:`ErrorKind`).
-            Defaults to ``None``, which a reader treats as ``"internal"``, so a
-            peer that sends no classification still produces a valid frame.
+            ``None`` and values outside this build's :data:`ErrorKind`
+            vocabulary are read as ``"internal"``.
     """
 
     kind: Literal["error"] = "error"
     id: str
     type: str
     message: str
-    error_kind: ErrorKind | None = None
+    error_kind: str | None = None
 
 
 class EventFrame(BaseModel):
@@ -255,4 +258,11 @@ class RemoteError(WireError):
 
 
 class ConnectionClosedError(WireError):
-    """The peer connection closed before a pending call resolved."""
+    """This process's own connection closed before a pending call resolved.
+
+    Never rehydrated from a peer's ``ErrorFrame``: a peer's
+    ``ConnectionClosedError`` arrives as a :class:`RemoteError` with
+    ``kind == "connection_lost"``.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "connection_lost"

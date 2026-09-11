@@ -12,6 +12,7 @@ still produces a valid frame and reads as ``"internal"``.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -26,6 +27,7 @@ from ai_functions.network import (
     register_error_kind,
 )
 from ai_functions.network.channel import _error_frame, _rehydrate_error  # noqa: PLC2701
+from ai_functions.network.error_kinds import _REGISTRY, coerce_error_kind  # noqa: PLC2701
 from ai_functions.network.wire import Frame
 from ai_functions.runtime.coordinator import InMemoryCoordinator
 from ai_functions.runtime.errors import (
@@ -42,12 +44,31 @@ _FRAME_ADAPTER: TypeAdapter[Frame] = TypeAdapter(Frame)  # pyright: ignore[repor
 _TID = ThreadId("thr-error-kinds")
 
 
+@pytest.fixture(autouse=True)
+def _pristine_registry() -> Iterator[None]:
+    """Registrations are process-wide; undo this test's before the next one."""
+    saved = dict(_REGISTRY)
+    yield
+    _REGISTRY.clear()
+    _REGISTRY.update(saved)
+
+
 class _ProviderThrottled(Exception):
     """Stands in for a model provider's throttling exception."""
 
 
 class _ProviderThrottledSubclass(_ProviderThrottled):
     """A provider exception the host never registered by name."""
+
+
+class _DeclaresItsKind(Exception):
+    """Stands in for an exception this codebase owns, declaring its own kind."""
+
+    error_kind = "worker_lost"
+
+
+class _InheritsDeclaredKind(_DeclaresItsKind):
+    """A subclass with no declaration of its own."""
 
 
 # ── classify: seeded defaults ─────────────────────────────────────────────
@@ -83,6 +104,18 @@ def test_pydantic_validation_error_is_invalid_input() -> None:
     with pytest.raises(ValidationError) as excinfo:
         _ = ThreadInfo.model_validate({"thread_id": None})
     assert classify(excinfo.value) == "invalid_input"
+
+
+def test_declared_error_kind_classifies_without_registration() -> None:
+    """A class this codebase owns declares ``error_kind`` on itself."""
+    assert classify(_DeclaresItsKind("gone")) == "worker_lost"
+    assert classify(_InheritsDeclaredKind("gone")) == "worker_lost"
+
+
+def test_registration_overrides_a_declaration_on_the_same_class() -> None:
+    """The registry wins over the class's own declaration at the same level."""
+    register_error_kind(_DeclaresItsKind, "model_unavailable")
+    assert classify(_DeclaresItsKind("gone")) == "model_unavailable"
 
 
 # ── register_error_kind: host extension and the MRO walk ──────────────────
@@ -129,6 +162,25 @@ def test_error_frame_from_a_peer_that_sends_no_kind() -> None:
     assert rehydrated.kind == "internal"
 
 
+def test_error_frame_with_a_kind_from_a_newer_vocabulary_still_parses() -> None:
+    """An unknown kind must not reject the frame — that would hang the call."""
+    decoded = _FRAME_ADAPTER.validate_json(
+        '{"kind":"error","id":"c-1","type":"Whatever","message":"boom","error_kind":"brand_new_kind"}'
+    )
+    assert isinstance(decoded, ErrorFrame)
+    assert decoded.error_kind == "brand_new_kind"
+    rehydrated = _rehydrate_error(decoded.type, decoded.message, decoded.error_kind)
+    assert isinstance(rehydrated, RemoteError)
+    assert rehydrated.kind == "internal"
+
+
+def test_coerce_error_kind_passes_known_kinds_through() -> None:
+    """A kind in this build's vocabulary survives coercion unchanged."""
+    assert coerce_error_kind("not_found") == "not_found"
+    assert coerce_error_kind(None) == "internal"
+    assert coerce_error_kind("brand_new_kind") == "internal"
+
+
 def test_relayed_remote_error_keeps_its_type_and_kind() -> None:
     """A middle peer re-encodes a ``RemoteError`` without flattening it."""
     relayed = _error_frame("c-2", RemoteError("_ProviderThrottled", "slow down", "model_unavailable"))
@@ -141,6 +193,14 @@ def test_known_exception_still_rehydrates_to_its_class() -> None:
     """A name this process knows becomes that class, not a ``RemoteError``."""
     rehydrated = _rehydrate_error("ThreadNotFoundError", "thr-1", "not_found")
     assert isinstance(rehydrated, ThreadNotFoundError)
+
+
+def test_remote_connection_closed_error_stays_remote() -> None:
+    """A peer's ``ConnectionClosedError`` arrives as a classified ``RemoteError``, not the local class."""
+    rehydrated = _rehydrate_error("ConnectionClosedError", "channel closed", "connection_lost")
+    assert isinstance(rehydrated, RemoteError)
+    assert not isinstance(rehydrated, ConnectionClosedError)
+    assert rehydrated.kind == "connection_lost"
 
 
 # ── Over a real endpoint ──────────────────────────────────────────────────

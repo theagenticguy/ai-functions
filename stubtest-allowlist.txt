@@ -102,3 +102,6 @@ ai_functions.experimental.economics.function.EconomicThread.__type_params__
 # AIThread._build_agent. It is a diagnostics helper below the public surface
 # (exported nowhere, no external consumers), so the spec does not stub it.
 ai_functions.ai_thread.debug
+# ``ErrorKind = Literal["cancelled", "not_found", ...]``: same Literal-alias false positive as
+# runtime.coordinator_tools_core.SendMessageMode.
+ai_functions.network.wire.ErrorKind

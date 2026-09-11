@@ -1,8 +1,13 @@
-"""Errors specific to runtime execution: dispatcher and distributed transport."""
+"""Errors specific to runtime execution: dispatcher and distributed transport.
+
+Each error declares an ``error_kind`` class attribute — the
+:data:`~ai_functions.network.wire.ErrorKind` value a peer reads when the error
+crosses the wire (see :func:`ai_functions.network.error_kinds.classify`).
+"""
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from ..types import EventKind, ThreadId, WorkerId
 
@@ -25,6 +30,7 @@ class ThreadIdMismatchError(ValueError):
         that matches the thread whose log they live in.
     """
 
+    error_kind: ClassVar[str]
     event_thread_id: ThreadId
     routing_thread_id: ThreadId
 
@@ -55,6 +61,7 @@ class EventEmissionError(RuntimeError):
         I5, I7.
     """
 
+    error_kind: ClassVar[str]
     kind: EventKind
     thread_id: ThreadId
     source: Literal["runtime", "thread"]
@@ -78,6 +85,7 @@ class ThreadNotFoundError(KeyError):
         thread_id: The id that was not found.
     """
 
+    error_kind: ClassVar[str]
     thread_id: ThreadId
 
     def __init__(self, thread_id: ThreadId) -> None: ...
@@ -95,6 +103,7 @@ class WorkerLostError(DistributedError):
         thread_ids: Ids of threads previously hosted on this worker.
     """
 
+    error_kind: ClassVar[str]
     worker_id: WorkerId
     thread_ids: list[ThreadId]
 
@@ -109,6 +118,7 @@ class SerializationError(DistributedError):
         reason: Cloudpickle error text.
     """
 
+    error_kind: ClassVar[str]
     function_name: str
 
     def __init__(self, function_name: str, reason: str) -> None: ...
@@ -122,6 +132,7 @@ class ConnectionLostError(DistributedError):
         retries: Number of failed reconnection attempts.
     """
 
+    error_kind: ClassVar[str]
     url: str
     retries: int
 

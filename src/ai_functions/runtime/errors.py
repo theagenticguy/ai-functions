@@ -1,8 +1,16 @@
-"""Errors specific to runtime execution: dispatcher and distributed transport."""
+"""Errors specific to runtime execution: dispatcher and distributed transport.
+
+Each error declares an ``error_kind`` class attribute — the
+:data:`~ai_functions.network.wire.ErrorKind` value a peer reads when the error
+crosses the wire (see :func:`ai_functions.network.error_kinds.classify`).
+"""
+
+# ``error_kind`` is typed ``str`` rather than ``ErrorKind`` so this module does
+# not import the network layer.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from ..types import EventKind, ThreadId, WorkerId
 
@@ -24,6 +32,8 @@ class ThreadIdMismatchError(ValueError):
         Events stored via a ``Coordinator`` always carry a ``thread_id``
         that matches the thread whose log they live in.
     """
+
+    error_kind: ClassVar[str] = "invalid_input"
 
     def __init__(self, event_thread_id: ThreadId, routing_thread_id: ThreadId) -> None:
         self.event_thread_id: ThreadId = event_thread_id
@@ -59,6 +69,8 @@ class EventEmissionError(RuntimeError):
         I5, I7.
     """
 
+    error_kind: ClassVar[str] = "invalid_input"
+
     def __init__(
         self,
         kind: EventKind,
@@ -93,6 +105,8 @@ class ThreadNotFoundError(KeyError):
         thread_id: The id that was not found.
     """
 
+    error_kind: ClassVar[str] = "not_found"
+
     def __init__(self, thread_id: ThreadId) -> None:
         self.thread_id: ThreadId = thread_id
         super().__init__(thread_id)
@@ -110,6 +124,8 @@ class WorkerLostError(DistributedError):
         thread_ids: Ids of threads previously hosted on this worker.
     """
 
+    error_kind: ClassVar[str] = "worker_lost"
+
     def __init__(self, worker_id: WorkerId, thread_ids: list[ThreadId]) -> None:
         self.worker_id: WorkerId = worker_id
         self.thread_ids: list[ThreadId] = thread_ids
@@ -124,6 +140,8 @@ class SerializationError(DistributedError):
         reason: Cloudpickle error text.
     """
 
+    error_kind: ClassVar[str] = "invalid_input"
+
     def __init__(self, function_name: str, reason: str) -> None:
         self.function_name: str = function_name
         super().__init__(f"Cannot serialize '{function_name}': {reason}")
@@ -136,6 +154,8 @@ class ConnectionLostError(DistributedError):
         url: WebSocket URL that could not be reached.
         retries: Number of failed reconnection attempts.
     """
+
+    error_kind: ClassVar[str] = "connection_lost"
 
     def __init__(self, url: str, retries: int) -> None:
         self.url: str = url

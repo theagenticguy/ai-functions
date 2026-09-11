@@ -28,7 +28,8 @@ Handler = Callable[[dict[str, Any]], Awaitable[Any]]  # pyright: ignore[reportEx
 
 Raising an exception produces an ``ErrorFrame`` in response; the
 exception's class name becomes the frame ``type``, ``str(exc)`` becomes
-the ``message``.
+the ``message``, and :func:`ai_functions.network.error_kinds.classify`
+supplies the ``error_kind``.
 """
 
 EventCallback = Callable[[Event], None]

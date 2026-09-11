@@ -9,6 +9,8 @@ required in both the path and the header, and revocation is immediate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -71,9 +73,19 @@ def _http(token: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"})
 
 
+@contextlib.asynccontextmanager
+async def _streams(url: str, token: str) -> AsyncIterator[tuple[Any, Any]]:  # pyright: ignore[reportExplicitAny]
+    """Open the streamable-HTTP transport and yield ``(read, write)``.
+
+    mcp 1.x yields a third value (the session-id getter); mcp 2 yields two.
+    """
+    async with streamable_http_client(url, http_client=_http(token)) as streams:
+        yield streams[0], streams[1]
+
+
 async def _call(url: str, token: str, tool: str, args: dict[str, Any]) -> str:  # pyright: ignore[reportExplicitAny]
     """Open a session against ``url`` and invoke one tool."""
-    async with streamable_http_client(url, http_client=_http(token)) as (read, write, _):
+    async with _streams(url, token) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool, args)
@@ -93,13 +105,15 @@ async def server():  # noqa: ANN201 - pytest fixture
 async def test_tools_and_schema_match_the_shared_core(server: CoordinatorToolServer) -> None:
     """The wire schema is the shared declaration: enum, default, required."""
     reg = server.register(_StubCoordinator(), ThreadId("t-alice"))  # pyright: ignore[reportArgumentType]
-    async with streamable_http_client(reg.url, http_client=_http(reg.token)) as (read, write, _):
+    async with _streams(reg.url, reg.token) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = {t.name: t for t in (await session.list_tools()).tools}
 
     assert set(tools) == {"list_threads", "send_message"}
-    schema = tools["send_message"].inputSchema
+    # Wire-name lookup: the field is ``inputSchema`` on mcp 1.x and ``input_schema``
+    # (alias ``inputSchema``) on mcp 2.
+    schema = tools["send_message"].model_dump(by_alias=True)["inputSchema"]
     core = SEND_MESSAGE_INPUT_SCHEMA["properties"]
     assert schema["properties"]["mode"]["enum"] == core["mode"]["enum"]
     assert schema["properties"]["mode"]["default"] == core["mode"]["default"]

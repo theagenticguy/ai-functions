@@ -34,6 +34,12 @@ The MCP app runs stateless (``stateless_http=True``) and answers in JSON
 messages, no resource subscriptions, so nothing needs an SSE stream. Session
 state lives in the coordinator, not the transport.
 
+Runs on either major of the ``mcp`` SDK. mcp 2 renamed ``FastMCP`` to
+``MCPServer`` (``mcp.server.mcpserver``) and moved the transport options
+(``stateless_http``, ``json_response``) from the constructor to
+``streamable_http_app()``; the import below picks whichever is installed and
+:func:`_build_mcp_app` places the options accordingly.
+
 Requires the ``runtime-tools`` extra (``mcp``, ``uvicorn``).
 """
 
@@ -60,7 +66,15 @@ from .coordinator_tools_core import send_message as _core_send_message
 
 try:
     import uvicorn
-    from mcp.server.fastmcp import FastMCP
+
+    try:
+        from mcp.server.mcpserver import MCPServer as _MCPServer  # mcp >= 2
+    except ImportError:
+        from mcp.server.fastmcp import FastMCP as _MCPServer  # mcp 1.x
+
+        _MCP_V2 = False
+    else:
+        _MCP_V2 = True
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         "CoordinatorToolServer requires the optional 'runtime-tools' extra "
@@ -116,8 +130,31 @@ def _require_registration() -> _Registration:
     return reg
 
 
-def _build_mcp_app() -> FastMCP:
-    """Build the single stateless FastMCP app serving both runtime tools.
+def _new_mcp_server() -> _MCPServer:
+    """Construct the MCP server object for the installed ``mcp`` major.
+
+    mcp 1.x takes the transport options on the constructor; mcp 2 takes them
+    on :meth:`streamable_http_app` (see :func:`_streamable_http_app`).
+    """
+    if _MCP_V2:
+        return _MCPServer("ai_functions_runtime")
+    return _MCPServer("ai_functions_runtime", stateless_http=True, json_response=True)
+
+
+def _streamable_http_app(mcp: _MCPServer) -> Callable[..., Awaitable[None]]:
+    """Return ``mcp``'s streamable-HTTP ASGI app, stateless and answering in JSON.
+
+    ``stateless_http=True`` / ``json_response=True`` are constructor arguments
+    on mcp 1.x (already applied by :func:`_new_mcp_server`) and
+    ``streamable_http_app`` arguments on mcp 2.
+    """
+    if _MCP_V2:
+        return mcp.streamable_http_app(stateless_http=True, json_response=True)
+    return mcp.streamable_http_app()
+
+
+def _build_mcp_app() -> Callable[..., Awaitable[None]]:
+    """Build the single stateless MCP ASGI app serving both runtime tools.
 
     Tool identity is per-request: the token router resolves which thread is
     calling and parks its registration in a context variable before handing
@@ -129,7 +166,7 @@ def _build_mcp_app() -> FastMCP:
     cleared, after which every ``EventSourceResponse`` in the process closes
     its writer before sending a body.
     """
-    mcp = FastMCP("ai_functions_runtime", stateless_http=True, json_response=True)
+    mcp = _new_mcp_server()
 
     @mcp.tool(name="list_threads", description=LIST_THREADS_DESCRIPTION)
     async def list_threads() -> str:
@@ -146,7 +183,7 @@ def _build_mcp_app() -> FastMCP:
         reg = _require_registration()
         return await _core_send_message(reg.coordinator, str(reg.thread_id), thread_id, message, mode)
 
-    return mcp
+    return _streamable_http_app(mcp)
 
 
 async def _plain_response(send: _Send, status: int, body: str) -> None:
@@ -169,7 +206,7 @@ async def _plain_response(send: _Send, status: int, body: str) -> None:
 class _TokenRouter:
     """Pure-ASGI wrapper enforcing the token and Host checks per request.
 
-    Wraps the FastMCP app rather than subclassing any framework middleware so
+    Wraps the MCP ASGI app rather than subclassing any framework middleware so
     the inner app's lifespan passes through untouched (the streamable-HTTP
     session manager initialises in the lifespan; dropping it breaks every
     request).
@@ -205,7 +242,7 @@ class _TokenRouter:
             await _plain_response(send, 401, "unauthorized")
             return
 
-        # Rewrite to the path the FastMCP app is mounted on.
+        # Rewrite to the path the MCP app is mounted on.
         scope["path"] = "/mcp" + (f"/{rest}" if rest else "")
         ctx_token = _active_registration.set(registration)
         try:
@@ -279,7 +316,7 @@ class CoordinatorToolServer:
         self._socket = sock
         self._bound_port = bound_port
 
-        app = _TokenRouter(_build_mcp_app().streamable_http_app(), self)
+        app = _TokenRouter(_build_mcp_app(), self)
         config = uvicorn.Config(
             app,
             host=_HOST,

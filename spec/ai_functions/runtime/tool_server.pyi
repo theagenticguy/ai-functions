@@ -23,6 +23,8 @@ The MCP app runs stateless (``stateless_http=True``) and answers in JSON
 (``json_response=True``): tools and one-shot reads only — no server-initiated
 messages, no resource subscriptions, so nothing needs an SSE stream.
 
+Runs on either major of the ``mcp`` SDK (1.x ``FastMCP`` or 2.x ``MCPServer``).
+
 Requires the ``runtime-tools`` extra (``mcp``, ``uvicorn``).
 """
 

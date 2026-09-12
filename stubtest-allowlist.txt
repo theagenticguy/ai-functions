@@ -28,6 +28,9 @@ ai_functions.network.wire.Binary
 ai_functions.network.wire.Binary.*
 ai_functions.network.wire.Frame
 ai_functions.types.events.SystemEvent
+# ``Event = Annotated[SystemEvent | CustomEvent, Field(union_mode="left_to_right")]``: same
+# _AnnotatedAlias false positive as types.events.SystemEvent.
+ai_functions.types.events.Event
 ai_functions.types.policy.Policy
 ai_functions.memory.frozen.Frozen
 ai_functions.memory.procedural.Procedural

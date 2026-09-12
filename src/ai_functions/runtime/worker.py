@@ -642,7 +642,7 @@ class LocalWorker(WorkerAdapter):
             raise EventEmissionError(kind=kind, thread_id=thread_id, source=source)
         if source == "runtime" and kind in _BRIDGE_KINDS:
             raise EventEmissionError(kind=kind, thread_id=thread_id, source=source)
-        event_tid = cast("ThreadId | None", getattr(event, "thread_id", None))
+        event_tid = event.thread_id
         if event_tid is None:
             stamped = event.model_copy(update={"thread_id": thread_id})
         elif event_tid != thread_id:

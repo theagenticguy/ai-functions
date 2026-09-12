@@ -10,7 +10,7 @@ from pydantic import BaseModel, TypeAdapter
 from ai_functions import ai_function
 from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
 from ai_functions.types import Event, ThreadId
-from ai_functions.types.events import CustomEvent, MessageUserEvent
+from ai_functions.types.events import CustomEvent, MessageUserEvent, StartedEvent
 
 # ── serialize_result / deserialize_result round-trip ──────────────────────
 
@@ -109,6 +109,20 @@ def test_known_kind_does_not_hit_custom_event() -> None:
     assert parsed.text == "hi"
 
 
+def test_fieldless_system_event_round_trips_to_its_own_class() -> None:
+    """A built-in kind whose variant declares no extra field is not swallowed.
+
+    ``StartedEvent`` sets exactly the routing fields ``CustomEvent`` also
+    declares, so a union that scores members by fields-set would hand its dict
+    to ``CustomEvent``; the union is left-to-right precisely to prevent that.
+    """
+    ta: TypeAdapter[Event] = TypeAdapter(Event)
+    original = StartedEvent(thread_id=ThreadId("thr-1"), thread_name="agent")
+    reparsed = ta.validate_json(ta.dump_json(original))
+    assert isinstance(reparsed, StartedEvent)
+    assert reparsed == original
+
+
 def test_custom_event_collects_extra_fields_into_payload() -> None:
     """Extra top-level fields are folded into ``payload`` by the before-validator."""
     ta: TypeAdapter[Event] = TypeAdapter(Event)
@@ -118,19 +132,63 @@ def test_custom_event_collects_extra_fields_into_payload() -> None:
 
 
 def test_custom_event_serializes_flat() -> None:
-    """``model_dump`` emits ``{"kind": ..., **payload}`` — no ``"payload"`` key."""
-    dumped = CustomEvent(kind="my_kind", payload={"a": "hello", "b": 1}).model_dump()
-    assert dumped == {"kind": "my_kind", "a": "hello", "b": 1}
+    """``model_dump`` emits the declared fields plus the payload, flat."""
+    event = CustomEvent(kind="my_kind", thread_id=ThreadId("thr-1"), payload={"a": "hello", "b": 1})
+    dumped = event.model_dump()
+    assert dumped == {
+        "id": event.id,
+        "timestamp": event.timestamp,
+        "thread_id": "thr-1",
+        "thread_name": None,
+        "message_id": None,
+        "kind": "my_kind",
+        "a": "hello",
+        "b": 1,
+    }
     assert "payload" not in dumped
 
 
 def test_custom_event_flat_wire_format_round_trips() -> None:
-    """Flat wire dict → validator → serializer reproduces the same flat dict."""
+    """Flat wire dict → validator → serializer keeps every key it was given."""
     ta: TypeAdapter[Event] = TypeAdapter(Event)
-    flat = {"kind": "my_kind", "a": "hello", "b": 1}
+    flat = {"kind": "my_kind", "thread_id": "thr-1", "a": "hello", "b": 1}
     parsed = ta.validate_python(flat)
     dumped = ta.dump_python(parsed)
-    assert dumped == flat
+    assert {k: dumped[k] for k in flat} == flat
+    assert ta.validate_python(dumped) == parsed
+
+
+def test_custom_event_routing_fields_are_declared_not_payload() -> None:
+    """A routing key stays out of ``payload`` and survives serialization."""
+    ta: TypeAdapter[Event] = TypeAdapter(Event)
+    event = CustomEvent(kind="my_kind", thread_id=ThreadId("thr-7"), payload={"a": 1})
+    assert event.thread_id == ThreadId("thr-7")
+    assert event.payload == {"a": 1}
+    dumped = ta.dump_python(event)
+    assert dumped["thread_id"] == "thr-7"
+    assert ta.validate_python(dumped).thread_id == ThreadId("thr-7")
+
+
+def test_custom_event_shadowing_payload_key_round_trips() -> None:
+    """A payload entry named like a declared field never eats the routing field."""
+    ta: TypeAdapter[Event] = TypeAdapter(Event)
+    event = CustomEvent(kind="my_kind", thread_id=ThreadId("thr-7"), payload={"id": "0", "text": "t"})
+    dumped = ta.dump_python(event)
+    # The shadowing entry is re-nested; the top-level ``id`` is the event's own.
+    assert dumped["id"] == event.id
+    assert dumped["payload"] == {"id": "0"}
+    assert dumped["text"] == "t"
+    reparsed = ta.validate_python(dumped)
+    assert reparsed == event
+    assert reparsed.payload == {"id": "0", "text": "t"}
+
+
+def test_custom_event_is_frozen() -> None:
+    """``CustomEvent`` is immutable like every other event; copies re-route it."""
+    event = CustomEvent(kind="my_kind")
+    with pytest.raises(Exception):  # noqa: B017, PT011 -- pydantic raises ValidationError
+        event.thread_id = ThreadId("thr-injected")  # type: ignore[misc]
+    assert event.model_copy(update={"thread_id": ThreadId("thr-1")}).thread_id == ThreadId("thr-1")
 
 
 def test_custom_event_explicit_payload_still_collects_extras() -> None:

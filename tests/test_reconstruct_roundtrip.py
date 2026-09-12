@@ -34,7 +34,7 @@ from ai_functions.testing import (
     assert_messages_equivalent,
     normalize_messages,
 )
-from ai_functions.types import EventKind
+from ai_functions.types import CustomEvent, EventKind
 
 
 @ai_function[str](structured_output=False)
@@ -331,3 +331,27 @@ def test_normalizer_is_deep_copy() -> None:
     result = normalize_messages(original)  # type: ignore[arg-type]
     result[0]["content"].append({"text": "y"})  # type: ignore[arg-type, index]
     assert len(original[0]["content"]) == 1  # type: ignore[arg-type, index]
+
+
+# ── I9: custom events are inert to reconstruction ─────────────────────────
+
+
+async def test_custom_event_in_log_is_inert_to_reconstruction() -> None:
+    """A routed ``CustomEvent`` in the log adds no message (I9).
+
+    A custom event carries the same routing fields as a conversation event,
+    so nothing but its ``kind`` distinguishes it during the match; this pins
+    that ``reconstruct_messages`` still skips it and the history stays equal
+    to the live ``agent.messages``.
+    """
+    async with RuntimeHarness() as h:
+        model = ScriptedModel([Turn(text="hello there")])
+        handle = await h.spawn(_text_only.replace(model=model))
+        await handle.run("hi")
+        h.coordinator.append_event(CustomEvent(kind="my_app_metric", thread_id=handle.id, payload={"step": 1}))
+        events = await h.events(handle.id)
+        assert any(isinstance(e, CustomEvent) for e in events)
+        assert_messages_equivalent(
+            h.agent_messages(handle.id),
+            reconstruct_messages(events),
+        )

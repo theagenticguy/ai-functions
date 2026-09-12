@@ -449,18 +449,38 @@ class TraceDelegationEvent(BaseEvent):
 # ── User-defined extension ──
 
 
-class CustomEvent(BaseModel):
+class CustomEvent(BaseEvent):
     """Catch-all event for user-defined ``kind`` values.
 
-    A ``mode="before"`` validator reshapes flat input dicts: all keys
-    other than declared model fields land inside ``payload``. A
-    ``model_serializer`` flattens on the way out, so the wire format
-    round-trips through pydantic.
+    Carries the same routing fields as every other event (``id``,
+    ``timestamp``, ``thread_id``, ``thread_name``, ``message_id``), so routing
+    survives the wire: a subscription filtered by ``thread_id`` matches a
+    custom event that arrived over a ``CoordinatorClient``, ``get_events``
+    returns it under its own thread, and ``Coordinator.append_event`` accepts
+    it from a client that stamped the id itself.
+
+    A ``mode="before"`` validator reshapes flat input dicts: all keys other
+    than declared model fields land inside ``payload``. A ``model_serializer``
+    flattens on the way out, emitting the declared fields next to the
+    payload's entries, so the wire format round-trips through pydantic.
+
+    A top-level key that names a declared field binds to that field, so
+    ``CustomEvent(kind="k", thread_id=tid)`` routes rather than filling
+    ``payload``. An entry inside an explicit ``payload`` keeps its place: the
+    serializer re-nests payload entries whose keys shadow a declared field
+    under a ``"payload"`` key, which stops a payload entry named ``id`` or
+    ``thread_id`` from overwriting the event's own routing on a round trip.
+
+    ``BaseEvent`` is frozen, so an instance is immutable; build a routed copy
+    with ``model_copy(update={"thread_id": ...})``.
 
     If ``payload`` is provided explicitly, any extra top-level keys are
     merged into it (extras take precedence over explicit-payload entries
     that have the same key). Known declared fields on subclasses (if any)
     are preserved as-is and not swept into ``payload``.
+
+    Invariants:
+        I2.
     """
 
     kind: str
@@ -479,14 +499,21 @@ SystemEvent = Annotated[
     Field(discriminator="kind")
 ]
 
-Event = SystemEvent | CustomEvent
+Event = Annotated[SystemEvent | CustomEvent, Field(union_mode="left_to_right")]
 """Tagged union of every built-in event variant plus the ``CustomEvent`` fallback.
 
-Pydantic tries union members left-to-right (with the discriminated union
-as a single fast-path attempt first). If ``kind`` does not match any
-``SystemEvent``, it falls through to ``CustomEvent``, whose
+Pydantic tries union members left-to-right: the discriminated ``SystemEvent``
+union is a single fast-path attempt on ``kind``, and only a kind that matches
+no built-in variant falls through to ``CustomEvent``, whose
 ``model_validator(mode="before")`` reshapes the raw dict into
-``{kind, payload}``.
+``{kind, routing fields, payload}`` — every key outside ``CustomEvent``'s
+declared fields lands in ``payload``, so an unknown kind never loses data
+and never loses its routing.
+
+``union_mode="left_to_right"`` is what keeps a built-in kind out of
+``CustomEvent``: smart mode tie-breaks two matching members by the number of
+fields set, and ``CustomEvent`` declares every routing field, so it would
+outscore the concrete variant a built-in kind belongs to and swallow it.
 
 Users can write their own union to add correct parsing of their own
 event types.

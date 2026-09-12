@@ -21,6 +21,8 @@ to the matching ``LocalWorker`` instance via the shared ``WireChannel``.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self, cast, final
@@ -105,6 +107,12 @@ class _ClientSubscription(Subscription):
         self.unsubscribe()
 
 
+_logger: logging.Logger = logging.getLogger("ai_functions.network.client")
+
+APPEND_ERROR_HISTORY: int = 32
+"""How many ``append_event`` failures :attr:`CoordinatorClient.append_errors` keeps."""
+
+
 class _Subscriber:
     __slots__ = ("callback", "thread_id", "kinds")
 
@@ -156,11 +164,13 @@ class CoordinatorClient(Coordinator):
         "_channel",
         "_subscribers",
         "_workers",
+        "_append_errors",
     )
 
     _channel: WireChannel
     _subscribers: list[_Subscriber]
     _workers: dict[WorkerId, WorkerAdapter]
+    _append_errors: deque[BaseException]
 
     @classmethod
     async def connect(cls, url: str) -> Self:
@@ -192,6 +202,7 @@ class CoordinatorClient(Coordinator):
         self._channel = WireChannel(transport)
         self._subscribers = []
         self._workers = {}
+        self._append_errors = deque(maxlen=APPEND_ERROR_HISTORY)
         _ = self._channel.on_event(self._dispatch_event)
 
     def _dispatch_event(self, event: Event) -> None:
@@ -608,6 +619,10 @@ class CoordinatorClient(Coordinator):
         later via :meth:`on`. Per I11, a failure of the scheduled RPC is logged
         and swallowed rather than propagated to the (often sync) caller.
 
+        A rejected append is observable: the failure is logged at ERROR and
+        recorded on :attr:`append_errors`, so a caller that must know whether
+        the endpoint took the event can read that instead of watching the log.
+
         Args:
             event: The event to append; ``event.thread_id`` must be set.
         """
@@ -616,15 +631,23 @@ class CoordinatorClient(Coordinator):
         async def _send() -> None:
             try:
                 _ = await self._call("coordinator.append_event", params)
-            except Exception as exc:  # noqa: BLE001 -- log + swallow (I11)
-                import logging
-
-                logging.getLogger("ai_functions.network.client").warning(
-                    "append_event RPC failed: %r",
-                    exc,
-                )
+            except Exception as exc:  # noqa: BLE001 -- record + swallow (I11)
+                self._append_errors.append(exc)
+                _logger.error("append_event RPC failed for kind %r: %r", event.kind, exc)
 
         _ = asyncio.create_task(_send())
+
+    @property
+    def append_errors(self) -> tuple[BaseException, ...]:
+        """Failures raised by the fire-and-forget :meth:`append_event` RPCs.
+
+        Oldest first, capped at :data:`APPEND_ERROR_HISTORY` entries so a peer
+        that rejects every append cannot grow the client without bound. Empty
+        while every scheduled append has been accepted, which is what makes a
+        remote rejection (an unrouted event, a closed channel) observable to a
+        caller of the synchronous, fire-and-forget :meth:`append_event`.
+        """
+        return tuple(self._append_errors)
 
     async def get_events(
         self,

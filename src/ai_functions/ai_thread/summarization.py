@@ -340,8 +340,8 @@ class DefaultSummarizationStrategy:
             raise SummarizationFailedError(
                 function_name="",
                 reason=(
-                    "summarization prefix ends on a CustomEvent without an "
-                    "id field; cannot use it as an until_event_id marker"
+                    "summarization prefix ends on an event without an id "
+                    "field; cannot use it as an until_event_id marker"
                 ),
             )
 

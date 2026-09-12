@@ -42,8 +42,9 @@ async def last_event_id(coordinator: Coordinator, thread_id: ThreadId) -> EventI
     """
     events = await coordinator.get_events(thread_id)
     for event in reversed(events):
-        # CustomEvent carries no id; only BaseEvent-backed events can anchor
-        # a since_id cursor, so skip to the newest event that has one.
+        # A user-defined ``Event`` union member may declare no ``id``; only an
+        # event that has one can anchor a since_id cursor, so skip to the
+        # newest event that does.
         event_id: EventId | None = getattr(event, "id", None)
         if event_id is not None:
             return event_id

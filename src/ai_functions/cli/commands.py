@@ -290,8 +290,8 @@ def _latest_event_id(events: list[Event]) -> EventId | None:
     """Return the id of the newest event, or ``None`` if there is none.
 
     ``get_events`` is oldest-first, so the last event with an ``id``
-    attribute is the watermark. ``CustomEvent`` is not a ``BaseEvent``
-    and carries no ``id``, so it is skipped.
+    attribute is the watermark. A user-defined ``Event`` union member that
+    declares no ``id`` is skipped.
     """
     for event in reversed(events):
         event_id = getattr(event, "id", None)
